@@ -400,7 +400,7 @@ class MainActivity : Activity(), SensorEventListener {
         ctlPanel.tag = row2
 
         val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for (k in listOf("FPS", "RES", "SHUTTER", "ISO", "WB", "FOCUS", "EXP", "ZOOM", "LENS", "LOCK", "MON", "SET", "CLEAN")) {
+        for (k in listOf("FPS", "RES", "SHUTTER", "ISO", "WB", "FOCUS", "EXP", "ZOOM", "LENS", "ROT", "LOCK", "MON", "SET", "CLEAN")) {
             val b = mkBtn(k) { onChip(k) }
             chips[k] = b
             chipRow.addView(b, LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = dp(6) })
@@ -423,19 +423,42 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(root)
     }
 
+    private fun dispRot(): Int = when (windowManager.defaultDisplay.rotation) {
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+
+    /** Clockwise rotation needed to make the sensor image upright on the current screen. rot setting: 0 = auto. */
+    private fun previewRot(): Int {
+        val m = st.i("rot")
+        if (m > 0) return (m - 1) * 90
+        val so = chars?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val front = cams.getOrNull(camIdx)?.back == false
+        return if (front) (so + dispRot()) % 360 else (so - dispRot() + 360) % 360
+    }
+
     private fun fitPreview() {
         val w = root.width - root.paddingLeft - root.paddingRight
         val h = root.height - root.paddingTop - root.paddingBottom
         if (w <= 0 || h <= 0) return
         val s = sizes[sizeIdx]
         val desq = anamVals[st.i("anam").coerceIn(0, anamVals.size - 1)]
-        val ratio = s.width * desq / s.height
+        val rot = previewRot()
+        val swap = rot == 90 || rot == 270
+        val cw = if (swap) s.height else s.width
+        val chh = if (swap) s.width else s.height
+        val ratio = cw * desq / chh
         var tw = w; var th = (w / ratio).toInt()
         if (th > h) { th = h; tw = (h * ratio).toInt() }
-        val tvW = (tw / desq).toInt()
+        val lw = if (swap) th else (tw / desq).toInt()
+        val lh = if (swap) (tw / desq).toInt() else th
         val lp = tv.layoutParams
-        if (lp.width != tvW || lp.height != th) tv.layoutParams = FrameLayout.LayoutParams(tvW, th, Gravity.CENTER)
-        tv.scaleX = desq
+        if (lp.width != lw || lp.height != lh) tv.layoutParams = FrameLayout.LayoutParams(lw, lh, Gravity.CENTER)
+        tv.rotation = rot.toFloat()
+        tv.scaleX = if (swap) 1f else desq
+        tv.scaleY = if (swap) desq else 1f
         val lo = overlay.layoutParams
         if (lo.width != tw || lo.height != th) overlay.layoutParams = FrameLayout.LayoutParams(tw, th, Gravity.CENTER)
     }
@@ -496,6 +519,7 @@ class MainActivity : Activity(), SensorEventListener {
                 camIdx = (camIdx + 1) % cams.size
                 ui.postDelayed({ openCamera() }, 350)
             }
+            "ROT" -> { st.put("rot", (st.i("rot") + 1) % 5); refreshUi(); fitPreview() }
             "LOCK" -> { aeLock = !aeLock; refreshUi(); update() }
             "MON" -> monitorMenu()
             "SET" -> settingsMenu()
@@ -535,6 +559,7 @@ class MainActivity : Activity(), SensorEventListener {
         set("EXP", "%+.1f".format(evVal * evStep))
         set("ZOOM", "%.1fx".format(zoomVal))
         set("LENS", cams[camIdx].label)
+        set("ROT", (if (st.i("rot") == 0) "Auto " else "") + previewRot() + "°")
         set("LOCK", if (aeLock) "ON" else "OFF")
         for ((k, b) in chips) b.setBackgroundColor(if (k == active || (k == "LOCK" && aeLock)) 0xCC1565C0.toInt() else 0x99000000.toInt())
         ctlTxt.text = when (active) {
@@ -987,8 +1012,16 @@ class MainActivity : Activity(), SensorEventListener {
         val s = session ?: return
         if (!afOk) return
         val a = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-        val cx = a.left + (x / overlay.width * a.width()).toInt()
-        val cy = a.top + (y / overlay.height * a.height()).toInt()
+        val nx = x / overlay.width
+        val ny = y / overlay.height
+        val (bx, by) = when (previewRot()) {
+            90 -> ny to 1 - nx
+            180 -> 1 - nx to 1 - ny
+            270 -> 1 - ny to nx
+            else -> nx to ny
+        }
+        val cx = a.left + (bx * a.width()).toInt()
+        val cy = a.top + (by * a.height()).toInt()
         val hw = a.width() / 16
         val hh = a.height() / 16
         val x0 = (cx - hw).coerceIn(a.left, a.right - hw * 2)
@@ -1144,8 +1177,7 @@ class MainActivity : Activity(), SensorEventListener {
             Surface.ROTATION_270 -> 270
             else -> 0
         }
-        val front = !cams[camIdx].back
-        val hint = if (front) (so + rot) % 360 else (so - rot + 360) % 360
+        val hint = previewRot()
         val dev = audioDevice()
         recorder = MediaRecorder().apply {
             setAudioSource(audSrcVals[st.i("audSrc").coerceIn(0, audSrcVals.size - 1)])
