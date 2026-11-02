@@ -1,4 +1,4 @@
-name: Build APK from zip
+name: Build APKs from zip
 on:
   push:
   workflow_dispatch:
@@ -7,8 +7,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Unzip project
-        run: unzip -q -o ManualCam.zip -d src
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -16,10 +14,45 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.11.1
-      - name: Build debug APK
+
+      - name: Unzip projects
+        run: |
+          mkdir -p src
+          [ -f ManualCam.zip ] && unzip -q -o ManualCam.zip -d src || true
+          [ -f HWManualCam.zip ] && unzip -q -o HWManualCam.zip -d src || true
+          ls src
+
+      - name: Build ManualCam (original)
+        if: hashFiles('ManualCam.zip') != ''
         working-directory: src/ManualCam
         run: gradle assembleDebug
+
+      - name: Build HW Manual Cam (with Huawei Camera Engine)
+        id: hw
+        if: hashFiles('HWManualCam.zip') != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: src/HWManualCam
+        run: gradle assembleDebug -PwithHw=true --console=plain 2>&1 | tee ../hw-build.log
+
+      - name: Build HW Manual Cam (fallback without Camera Engine)
+        if: steps.hw.outcome == 'failure'
+        working-directory: src/HWManualCam
+        run: gradle assembleDebug -PwithHw=false
+
       - uses: actions/upload-artifact@v4
+        if: hashFiles('ManualCam.zip') != ''
         with:
           name: ManualCam-apk
           path: src/ManualCam/app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('HWManualCam.zip') != ''
+        with:
+          name: HWManualCam-apk
+          path: src/HWManualCam/app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('HWManualCam.zip') != ''
+        with:
+          name: HW-build-log
+          path: src/hw-build.log
+          if-no-files-found: ignore
